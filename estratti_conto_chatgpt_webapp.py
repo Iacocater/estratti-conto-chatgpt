@@ -7,7 +7,7 @@ import json
 from io import BytesIO
 
 # Inserisci qui la tua API Key di OpenAI
-openai.api_key = "INSERISCI_LA_TUA_API_KEY"
+openai.api_key = "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"
 
 def estrai_testo_da_pdf(file):
     with fitz.open(stream=file.read(), filetype="pdf") as doc:
