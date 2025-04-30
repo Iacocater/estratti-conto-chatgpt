@@ -42,7 +42,6 @@ Testo:
 {testo}
 """
 """
-
     output = query({"inputs": prompt})
     try:
         return json.loads(output.split("```")[0].strip())
