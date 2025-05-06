@@ -1,81 +1,61 @@
-
 import streamlit as st
-import fitz  # PyMuPDF
 import pandas as pd
-import json
-from io import BytesIO
-import requests
 import os
+import zipfile
+import tempfile
+from docxtpl import DocxTemplate
+import unicodedata
 
-# Inserisci qui il tuo HuggingFace API token
-HUGGINGFACE_TOKEN = os.getenv("HUGGINGFACE_TOKEN") or "INSERISCI_LA_TUA_CHIAVE"
+st.set_page_config(page_title="Generatore Certificati DOCX", layout="centered")
+st.title("📄 Generatore massivo di certificati - compatibile con Excel con spazi")
 
-API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1"
-headers = {"Authorization": f"Bearer {HUGGINGFACE_TOKEN}"}
+# Funzione per "pulire" i nomi delle colonne
+def normalizza_nome(nome):
+    # Rimuove accenti e caratteri speciali, spazi e li trasforma in PascalCase
+    nome = unicodedata.normalize('NFKD', nome).encode('ASCII', 'ignore').decode('utf-8')
+    return ''.join([word.capitalize() for word in nome.replace("-", " ").split()])
 
-def query(payload):
-    response = requests.post(API_URL, headers=headers, json=payload)
-    try:
-        return response.json()[0]["generated_text"]
-    except Exception as e:
-        st.error(f"Errore nella risposta HuggingFace: {e}")
-        return None
+# Upload file
+excel_file = st.file_uploader("📥 Carica il file Excel (.xlsx)", type=["xlsx"])
+word_template = st.file_uploader("📄 Carica il template Word (.docx)", type=["docx"])
 
-def estrai_testo_da_pdf(file):
-    with fitz.open(stream=file.read(), filetype="pdf") as doc:
-        return "\n".join([page.get_text() for page in doc])[:3000]
+if excel_file and word_template:
+    df_raw = pd.read_excel(excel_file)
+    
+    # Mappa colonne originali -> normalizzate
+    originali = df_raw.columns
+    colonne_pulite = [normalizza_nome(col) for col in originali]
+    mappa_colonne = dict(zip(colonne_pulite, originali))
+    
+    # Ricrea il DataFrame con colonne pulite
+    df = df_raw.rename(columns={v: k for k, v in mappa_colonne.items()})
+    
+    st.success("Excel caricato. Colonne usabili (formato pulito):")
+    st.write(list(df.columns))
 
-def estrai_dati_con_huggingface(testo):
-    prompt = f"""
-Estrai i seguenti dati dal testo di un estratto conto assicurativo e restituiscili in JSON:
+    # Campo per rinominare i file
+    filename_field = st.selectbox("📝 Seleziona il campo da usare per rinominare i file", df.columns)
 
-- Broker
-- Data documento (gg/mm/aaaa)
-- Premio Lordo Totale
-- Provvigioni
-- Totale Estratto conto (Netto + Provvigioni)
+    if st.button("🚀 Genera certificati"):
+        with st.spinner("Creazione documenti in corso..."):
+            temp_dir = tempfile.mkdtemp()
+            zip_path = os.path.join(temp_dir, "certificati_word.zip")
+            docx_files = []
 
-Solo JSON valido, senza testo extra.
+            for _, row in df.iterrows():
+                context = row.to_dict()
+                doc = DocxTemplate(word_template)
+                doc.render(context)
 
-Testo:
-"""
-{testo}
-"""
-"""
-    output = query({"inputs": prompt})
-    try:
-        return json.loads(output.split("```")[0].strip())
-    except:
-        return None
+                filename = str(row[filename_field]).strip().replace(" ", "_")
+                filepath = os.path.join(temp_dir, f"{filename}.docx")
+                doc.save(filepath)
+                docx_files.append(filepath)
 
-def main():
-    st.set_page_config(page_title="Estrazione Estratti Conto HuggingFace", layout="centered")
-    st.title("📄 Estrazione Estratti Conto (modello Mistral via HuggingFace)")
-    st.markdown("Carica uno o più file PDF. I dati verranno estratti con un modello open source gratuito.")
+            with zipfile.ZipFile(zip_path, 'w') as zipf:
+                for file in docx_files:
+                    zipf.write(file, arcname=os.path.basename(file))
 
-    uploaded_files = st.file_uploader("Carica i PDF", type="pdf", accept_multiple_files=True)
-
-    if uploaded_files and st.button("Estrai dati e genera Excel"):
-        risultati = []
-        for file in uploaded_files:
-            st.info(f"🧾 Elaborazione: {file.name}")
-            testo = estrai_testo_da_pdf(file)
-            dati = estrai_dati_con_huggingface(testo)
-            if dati:
-                dati["File"] = file.name
-                risultati.append(dati)
-            else:
-                st.warning(f"Nessun dato estratto da {file.name}")
-
-        if risultati:
-            df = pd.DataFrame(risultati)
-            excel_file = BytesIO()
-            df.to_excel(excel_file, index=False)
-            excel_file.seek(0)
-            st.success("✅ Excel generato con successo!")
-            st.download_button("📥 Scarica Excel", data=excel_file, file_name="estratti_conto_huggingface.xlsx")
-        else:
-            st.warning("❌ Nessun dato è stato estratto da nessun file.")
-
-if __name__ == "__main__":
-    main()
+            st.success("✅ Tutti i file Word sono stati creati.")
+            with open(zip_path, "rb") as f:
+                st.download_button("⬇️ Scarica ZIP", f, file_name="certificati_word.zip")
